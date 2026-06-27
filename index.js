@@ -1,18 +1,22 @@
 const { DynamoDBClient, GetItemCommand } = require('@aws-sdk/client-dynamodb');
 const { SQSClient, SendMessageCommand } = require('@aws-sdk/client-sqs');
+const { SESv2Client } = require('@aws-sdk/client-sesv2');
 const { randomUUID } = require('crypto');
 
 const { validateBet, generateGames, buildGameDto } = require('./games');
 const { resolveNextConcurso } = require('./concurso');
+const { sendConfirmationEmail } = require('./mailer');
 
 const REGION = process.env.AWS_REGION || 'sa-east-1';
 const dynamoDb = new DynamoDBClient({ region: REGION });
 const sqs = new SQSClient({ region: REGION });
+const ses = new SESv2Client({ region: REGION });
 
 const DYNAMO_TABLE = process.env.DYNAMO_TABLE || 'LoteriasPredictiveData';
 const SQS_QUEUE_URL = process.env.QUEUE_URL;
 const RESULTS_API_URL = process.env.RESULTS_API_URL; // ex.: https://apiloterias.com.br/app/v2/resultado
 const RESULTS_API_TOKEN = process.env.RESULTS_API_TOKEN;
+const SES_SENDER = process.env.SES_SENDER || 'Loterias Sim <nao-responda@loteriassim.com.br>';
 
 const headers = {
     "Access-Control-Allow-Origin": "*",
@@ -100,6 +104,17 @@ async function postJogos(body) {
         QueueUrl: SQS_QUEUE_URL,
         MessageBody: JSON.stringify(dto),
     }));
+
+    // E-mail de confirmação (best-effort — não falha a requisição se o envio falhar)
+    if (bet.email) {
+        try {
+            await sendConfirmationEmail(ses, SES_SENDER, bet.email, {
+                lottery: bet.lottery, lotteryNumber, voucher, games,
+            });
+        } catch (e) {
+            console.error("Falha ao enviar e-mail de confirmação:", e);
+        }
+    }
 
     return json(200, {
         message: "Jogos gerados e enviados para apuração com sucesso!",

@@ -13,8 +13,8 @@ simulações de jogos do usuário.
 
 | Item | Valor |
 |------|-------|
-| Runtime | Node.js (deploy atual: `nodejs18.x`) |
-| Estilo | Handler Lambda "puro" (sem Express/serverless-http) |
+| Runtime | Node.js (deploy: `nodejs20.x`) |
+| Estilo | Handler Lambda "puro" + módulos de lógica pura testáveis (`games.js`, `concurso.js`) |
 | Handler | `index.handler` |
 | Função Lambda | `loterias-sim-api` |
 | API Gateway (HTTP) | `p49mq9wj2d` → `https://p49mq9wj2d.execute-api.sa-east-1.amazonaws.com` |
@@ -37,11 +37,43 @@ gravado pelo `loterias-ml-engine`, e devolve as sugestões/estatísticas.
 > `@aws-sdk/util-dynamodb#unmarshall` para entregar JSON limpo ao frontend.
 
 ### `POST /jogos`
-Recebe o corpo JSON da simulação e o publica como mensagem na fila **SQS
-`loterias-app-queue`**, que é consumida pelo `loterias-app-validator`.
+Recebe a aposta, **valida as regras da modalidade**, **gera os números**, resolve o
+**próximo concurso**, cria um **voucher** e publica o `GameDto` canônico na fila **SQS
+`loterias-app-queue`** (consumida pelo `loterias-app-validator`).
 
-- **200** → `{ "message": "Jogos enviados para simulação com sucesso!", "id": <epoch_ms> }`
-- O corpo é repassado **sem validação de schema** (passthrough).
+**Request:**
+```json
+{
+  "lottery": "mega-sena | lotofacil | lotomania",
+  "numbersPerGame": 6,            // valida min/max por modalidade
+  "gamesToGenerate": 5,           // 1..100
+  "email": "user@dominio.com",    // opcional (null = não recebe resultado)
+  "numbers": null                  // opcional: jogos escolhidos pelo usuário [[..],..]
+}
+```
+Regras por modalidade: **Mega-Sena** 6–20 de 01–60 · **Lotofácil** 15–20 de 01–25 ·
+**Lotomania** 50 (fixo) de 00–99. Se `numbers` vier preenchido, esses jogos são
+validados e o restante é completado por auto-geração até `gamesToGenerate`.
+
+**Response 200:**
+```json
+{
+  "message": "Jogos gerados e enviados para apuração com sucesso!",
+  "voucher": "uuid-v4",
+  "lottery": "mega-sena",
+  "gameType": 1,
+  "lotteryNumber": 2890,
+  "numbersPerGame": 6,
+  "games": [[7,18,35,42,51,60]]
+}
+```
+- **400** → erro de validação (mensagem amigável em `message`).
+- **502** → não foi possível resolver o concurso atual (API de resultados indisponível).
+
+**GameDto publicado no SQS** (contrato consumido pela pipeline):
+```json
+{ "gameType": 1, "email": "user@dominio.com", "voucher": "uuid", "lotteryNumber": 2890, "games": [[7,18,35,42,51,60]] }
+```
 
 ### `OPTIONS *`
 Responde `200` para preflight CORS.
@@ -59,10 +91,19 @@ Qualquer outra rota → **404** `{ "message": "Rota não encontrada" }`.
 | Variável | Obrigatória | Padrão | Descrição |
 |----------|:-----------:|--------|-----------|
 | `DYNAMO_TABLE` | não | `LoteriasPredictiveData` | Tabela DynamoDB lida em `GET /sugestoes` |
-| `QUEUE_URL` | **sim** | — | URL da fila SQS escrita em `POST /jogos` (`https://sqs.sa-east-1.amazonaws.com/585482653811/loterias-app-queue`) |
+| `QUEUE_URL` | **sim** | — | URL da fila SQS escrita em `POST /jogos` |
+| `RESULTS_API_URL` | **sim** | — | API de resultados p/ resolver o próximo concurso (`https://apiloterias.com.br/app/v2/resultado`) |
+| `RESULTS_API_TOKEN` | **sim** | — | Token da API de resultados (mover para Secrets Manager — ver roadmap) |
+| `AWS_REGION` | não | `sa-east-1` | Região dos clients AWS |
 
-> A região (`sa-east-1`) está **fixa no código** (`index.js`). Para portar de
-> ambiente/conta, externalize-a em variável de ambiente.
+## Testes
+
+Testes unitários (regras de geração/validação e resolução de concurso) com o runner
+nativo do Node — sem dependências:
+
+```bash
+npm test    # node --test
+```
 
 ---
 
@@ -86,27 +127,12 @@ A role de execução (`loterias-sim-lambda-role`) precisa de:
 
 ## Deploy
 
-O `aws-deploy.sh` empacota e cria a função:
+O `aws-deploy.sh` roda os testes, empacota (`index.js`, `games.js`, `concurso.js`,
+`node_modules`) e publica:
 
 ```bash
-npm install
-zip -r api-function.zip index.js package.json node_modules
-aws lambda create-function \
-  --function-name loterias-sim-api \
-  --runtime nodejs18.x \
-  --role arn:aws:iam::585482653811:role/loterias-sim-lambda-role \
-  --handler index.handler \
-  --zip-file fileb://api-function.zip \
-  --timeout 15 --memory-size 256 --region sa-east-1 \
-  --environment "Variables={DYNAMO_TABLE=LoteriasPredictiveData,QUEUE_URL=...}"
-```
-
-Para **atualizar** código já existente:
-
-```bash
-zip -r api-function.zip index.js package.json node_modules
-aws lambda update-function-code --function-name loterias-sim-api \
-  --zip-file fileb://api-function.zip --region sa-east-1
+RESULTS_API_TOKEN=*** ./aws-deploy.sh create   # primeira vez (cria a função)
+RESULTS_API_TOKEN=*** ./aws-deploy.sh update   # atualiza código + env vars (padrão)
 ```
 
 O wiring do API Gateway (rotas + permissão `lambda:InvokeFunction`) é feito pelo
@@ -133,15 +159,11 @@ loterias-ml-engine                  loterias-app-validator ─► Step Functions
 
 ## Pontos de atenção e melhorias
 
-- ⚠️ **Mismatch de runtime:** o deploy usa `nodejs18.x`, mas o `package-lock.json`
-  (AWS SDK v3 atual) pede **Node ≥ 20**. Migrar para `nodejs20.x`/`nodejs22.x`.
+- ✅ **Geração de jogos + contrato canônico** reintroduzidos (Fase 1 do roadmap):
+  `POST /jogos` agora gera os números, resolve o concurso e cria o voucher.
 - ⚠️ **Sem autenticação e CORS aberto (`*`):** a API é pública. Avaliar API key,
   authorizer (Cognito/Lambda) e restringir o CORS ao domínio `loteriassim.com.br`.
-- ⚠️ **Sem validação de schema** no `POST /jogos` — risco de mensagens inválidas
-  poluindo a fila. Validar o corpo (ex.: `zod`/JSON Schema) antes do `SendMessage`.
-- ⚠️ **Contrato divergente da web** (ver README do `loterias-sim-web`): o payload que
-  chega de `POST /jogos` precisa bater com o esperado pelo `validator`.
-- Erros retornam mensagem genérica `500` — bom para não vazar detalhes, mas convém
-  logar `requestId` e usar logging estruturado.
-- Adicionar throttling no API Gateway e DLQ na fila SQS.
-- Unmarshalling completo da resposta de `GET /sugestoes`.
+- 🔐 `RESULTS_API_TOKEN` deve sair da env var para o **Secrets Manager** (roadmap Fase 0.3).
+- Erros 5xx retornam mensagem genérica — convém logar `requestId` e logging estruturado.
+- Adicionar throttling no API Gateway e **DLQ** na fila SQS.
+- Unmarshalling completo da resposta de `GET /sugestoes` (`@aws-sdk/util-dynamodb`).

@@ -7,6 +7,7 @@ const { randomUUID } = require('crypto');
 const { validateBet, generateGames, buildGameDto } = require('./games');
 const { resolveNextConcurso } = require('./concurso');
 const { sendConfirmationEmail } = require('./mailer');
+const { corsHeaders } = require('./cors');
 
 const REGION = process.env.AWS_REGION || 'sa-east-1';
 const dynamoDb = new DynamoDBClient({ region: REGION });
@@ -18,19 +19,16 @@ const SQS_QUEUE_URL = process.env.QUEUE_URL;
 const RESULTS_API_URL = process.env.RESULTS_API_URL; // ex.: https://apiloterias.com.br/app/v2/resultado
 const RESULTS_API_TOKEN = process.env.RESULTS_API_TOKEN;
 const SES_SENDER = process.env.SES_SENDER || 'Loterias Sim <nao-responda@loteriassim.com.br>';
-
-const headers = {
-    "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Headers": "Content-Type",
-    "Access-Control-Allow-Methods": "OPTIONS,POST,GET"
-};
-
-const json = (statusCode, body) => ({ statusCode, headers, body: JSON.stringify(body) });
+const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS ||
+    'https://loteriassim.com.br,https://www.loteriassim.com.br,http://localhost:3000').split(',');
 
 exports.handler = async (event) => {
     console.log("Event:", JSON.stringify(event, null, 2));
     const path = event.resource || event.rawPath;
     const httpMethod = event.httpMethod || event.requestContext?.http?.method;
+    const origin = event.headers?.origin || event.headers?.Origin;
+    const headers = corsHeaders(origin, ALLOWED_ORIGINS);
+    const json = (statusCode, body) => ({ statusCode, headers, body: JSON.stringify(body) });
 
     if (httpMethod === 'OPTIONS') {
         return { statusCode: 200, headers, body: '' };
@@ -38,17 +36,14 @@ exports.handler = async (event) => {
 
     try {
         if (httpMethod === 'GET' && path === '/sugestoes') {
-            return await getSugestoes();
+            return await getSugestoes(json);
         }
-
         if (httpMethod === 'GET' && path === '/resultados') {
-            return await getResultados();
+            return await getResultados(json);
         }
-
         if (httpMethod === 'POST' && path === '/jogos') {
-            return await postJogos(JSON.parse(event.body || "{}"));
+            return await postJogos(JSON.parse(event.body || "{}"), json);
         }
-
         return json(404, { message: "Rota não encontrada" });
     } catch (error) {
         console.error("Erro inesperado:", error);
@@ -64,7 +59,7 @@ async function getPrediction() {
     return data.Item ? unmarshall(data.Item) : null;
 }
 
-async function getSugestoes() {
+async function getSugestoes(json) {
     const item = await getPrediction();
     if (!item) {
         return json(404, { message: "Nenhuma predição encontrada." });
@@ -76,7 +71,7 @@ async function getSugestoes() {
     });
 }
 
-async function getResultados() {
+async function getResultados(json) {
     const item = await getPrediction();
     if (!item || !item.latest_results) {
         return json(404, { message: "Nenhum resultado disponível." });
@@ -87,7 +82,7 @@ async function getResultados() {
     });
 }
 
-async function postJogos(body) {
+async function postJogos(body, json) {
     // 1. Valida a aposta (modalidade, dezenas por jogo, quantidade, e-mail)
     let bet;
     try {

@@ -21,10 +21,11 @@ npm test
 
 echo "3. Empacotando a API..."
 rm -f api-function.zip
-zip -r api-function.zip index.js games.js concurso.js mailer.js package.json node_modules >/dev/null
+zip -r api-function.zip index.js games.js concurso.js mailer.js cors.js package.json node_modules >/dev/null
 
 SES_SENDER="${SES_SENDER:-Loterias Sim <nao-responda@loteriassim.com.br>}"
-ENV_VARS="DYNAMO_TABLE=LoteriasPredictiveData,QUEUE_URL=$QUEUE_URL,RESULTS_API_URL=$RESULTS_API_URL,RESULTS_API_TOKEN=$RESULTS_API_TOKEN,SES_SENDER=$SES_SENDER"
+ALLOWED_ORIGINS="${ALLOWED_ORIGINS:-https://loteriassim.com.br,https://www.loteriassim.com.br}"
+ENV_VARS="DYNAMO_TABLE=LoteriasPredictiveData,QUEUE_URL=$QUEUE_URL,RESULTS_API_URL=$RESULTS_API_URL,RESULTS_API_TOKEN=$RESULTS_API_TOKEN,SES_SENDER=$SES_SENDER,ALLOWED_ORIGINS=$ALLOWED_ORIGINS"
 
 if [ "$ACTION" = "create" ]; then
   echo "4. Criando a função Lambda ($FUNCTION)..."

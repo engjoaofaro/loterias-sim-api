@@ -21,7 +21,7 @@ npm test
 
 echo "3. Empacotando a API..."
 rm -f api-function.zip
-zip -r api-function.zip index.js games.js concurso.js mailer.js cors.js package.json node_modules >/dev/null
+zip -r api-function.zip index.js games.js concurso.js mailer.js cors.js secret.js package.json node_modules >/dev/null
 
 SES_SENDER="${SES_SENDER:-Loterias Sim <nao-responda@loteriassim.com.br>}"
 ALLOWED_ORIGINS="${ALLOWED_ORIGINS:-https://loteriassim.com.br,https://www.loteriassim.com.br}"

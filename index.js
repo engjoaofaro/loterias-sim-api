@@ -8,6 +8,7 @@ const { validateBet, generateGames, buildGameDto } = require('./games');
 const { resolveNextConcurso } = require('./concurso');
 const { sendConfirmationEmail } = require('./mailer');
 const { corsHeaders } = require('./cors');
+const { getApiToken } = require('./secret');
 
 const REGION = process.env.AWS_REGION || 'sa-east-1';
 const dynamoDb = new DynamoDBClient({ region: REGION });
@@ -17,7 +18,6 @@ const ses = new SESv2Client({ region: REGION });
 const DYNAMO_TABLE = process.env.DYNAMO_TABLE || 'LoteriasPredictiveData';
 const SQS_QUEUE_URL = process.env.QUEUE_URL;
 const RESULTS_API_URL = process.env.RESULTS_API_URL; // ex.: https://apiloterias.com.br/app/v2/resultado
-const RESULTS_API_TOKEN = process.env.RESULTS_API_TOKEN;
 const SES_SENDER = process.env.SES_SENDER || 'Loterias Sim <nao-responda@loteriassim.com.br>';
 const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS ||
     'https://loteriassim.com.br,https://www.loteriassim.com.br,http://localhost:3000').split(',');
@@ -97,7 +97,7 @@ async function postJogos(body, json) {
         lotteryNumber = await resolveNextConcurso({
             apiName: bet.config.apiName,
             apiUrl: RESULTS_API_URL,
-            token: RESULTS_API_TOKEN,
+            token: await getApiToken(),
         });
     } catch (e) {
         console.error("Falha ao resolver concurso:", e);

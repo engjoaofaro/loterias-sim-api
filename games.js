@@ -104,6 +104,48 @@ function buildGameDto({ lottery, email, lotteryNumber, voucher, games }) {
   };
 }
 
+function _normLottery(l) {
+  const k = String(l).replace('-', '');
+  return { megasena: 'mega-sena', lotofacil: 'lotofacil', lotomania: 'lotomania' }[k] || l;
+}
+
+// Faixa de premiação para a quantidade de acertos, ou null. Aceita 'megasena' e 'mega-sena'.
+function prizeTier(lottery, hits) {
+  const k = String(lottery).replace('-', '');
+  if (k === 'megasena') return { 6: 'Sena', 5: 'Quina', 4: 'Quadra' }[hits] || null;
+  if (k === 'lotofacil') return hits >= 11 && hits <= 15 ? `${hits} acertos` : null;
+  if (k === 'lotomania') return (hits === 0 || (hits >= 15 && hits <= 20)) ? `${hits} acertos` : null;
+  return null;
+}
+
+// Monta a resposta de "conferir aposta" a partir do Outcome (apurada) e/ou do Game (pendente).
+function shapeAposta(outcome, game) {
+  if (outcome) {
+    const resultados = (outcome.resultados || []).map((r) => ({
+      numbers: r.numbers, hits: r.hits, premiacao: prizeTier(outcome.loteria, r.hits),
+    }));
+    return {
+      status: 'apurada',
+      voucher: outcome.voucher,
+      loteria: _normLottery(outcome.loteria),
+      concurso: outcome.concurso,
+      dezenasSorteadas: outcome.dezenasSorteadas,
+      resultados,
+      maxAcertos: outcome.maxAcertos,
+      premiado: resultados.some((r) => r.premiacao !== null),
+    };
+  }
+  if (game) {
+    return {
+      status: 'pendente',
+      voucher: game.voucher,
+      loteria: LOTTERY_BY_TYPE[game.gameType] || String(game.gameType),
+      concurso: game.lotteryNumber,
+    };
+  }
+  return null;
+}
+
 module.exports = {
   MAX_GAMES,
   GAMES,
@@ -114,4 +156,6 @@ module.exports = {
   validateBet,
   generateGames,
   buildGameDto,
+  prizeTier,
+  shapeAposta,
 };

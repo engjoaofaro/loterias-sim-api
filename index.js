@@ -4,7 +4,7 @@ const { SQSClient, SendMessageCommand } = require('@aws-sdk/client-sqs');
 const { SESv2Client } = require('@aws-sdk/client-sesv2');
 const { randomUUID } = require('crypto');
 
-const { validateBet, generateGames, buildGameDto } = require('./games');
+const { validateBet, generateGames, buildGameDto, shapeAposta } = require('./games');
 const { resolveNextConcurso } = require('./concurso');
 const { sendConfirmationEmail } = require('./mailer');
 const { corsHeaders } = require('./cors');
@@ -16,6 +16,8 @@ const sqs = new SQSClient({ region: REGION });
 const ses = new SESv2Client({ region: REGION });
 
 const DYNAMO_TABLE = process.env.DYNAMO_TABLE || 'LoteriasPredictiveData';
+const GAME_TABLE = process.env.GAME_TABLE || 'Game';
+const OUTCOMES_TABLE = process.env.OUTCOMES_TABLE || 'LoteriasOutcomes';
 const SQS_QUEUE_URL = process.env.QUEUE_URL;
 const RESULTS_API_URL = process.env.RESULTS_API_URL; // ex.: https://apiloterias.com.br/app/v2/resultado
 const SES_SENDER = process.env.SES_SENDER || 'Loterias Sim <nao-responda@loteriassim.com.br>';
@@ -40,6 +42,10 @@ exports.handler = async (event) => {
         }
         if (httpMethod === 'GET' && path === '/resultados') {
             return await getResultados(json);
+        }
+
+        if (httpMethod === 'GET' && path && path.startsWith('/apostas/')) {
+            return await getAposta(decodeURIComponent(path.slice('/apostas/'.length)), json);
         }
         if (httpMethod === 'POST' && path === '/jogos') {
             return await postJogos(JSON.parse(event.body || "{}"), json);
@@ -69,6 +75,19 @@ async function getSugestoes(json) {
         suggestions: item.suggestions,
         stats: item.stats,
     });
+}
+
+async function getAposta(voucher, json) {
+    if (!voucher) return json(400, { message: "Voucher não informado." });
+    const [outcomeRes, gameRes] = await Promise.all([
+        dynamoDb.send(new GetItemCommand({ TableName: OUTCOMES_TABLE, Key: { voucher: { S: voucher } } })),
+        dynamoDb.send(new GetItemCommand({ TableName: GAME_TABLE, Key: { voucher: { S: voucher } } })),
+    ]);
+    const outcome = outcomeRes.Item ? unmarshall(outcomeRes.Item) : null;
+    const game = gameRes.Item ? unmarshall(gameRes.Item) : null;
+    const result = shapeAposta(outcome, game);
+    if (!result) return json(404, { status: 'nao_encontrado', message: "Aposta não encontrada." });
+    return json(200, result);
 }
 
 async function getResultados(json) {

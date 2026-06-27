@@ -1,4 +1,5 @@
 const { DynamoDBClient, GetItemCommand } = require('@aws-sdk/client-dynamodb');
+const { unmarshall } = require('@aws-sdk/util-dynamodb');
 const { SQSClient, SendMessageCommand } = require('@aws-sdk/client-sqs');
 const { SESv2Client } = require('@aws-sdk/client-sesv2');
 const { randomUUID } = require('crypto');
@@ -40,6 +41,10 @@ exports.handler = async (event) => {
             return await getSugestoes();
         }
 
+        if (httpMethod === 'GET' && path === '/resultados') {
+            return await getResultados();
+        }
+
         if (httpMethod === 'POST' && path === '/jogos') {
             return await postJogos(JSON.parse(event.body || "{}"));
         }
@@ -51,18 +56,34 @@ exports.handler = async (event) => {
     }
 };
 
-async function getSugestoes() {
+async function getPrediction() {
     const data = await dynamoDb.send(new GetItemCommand({
         TableName: DYNAMO_TABLE,
         Key: { id: { S: 'LATEST_PREDICTION' } }
     }));
-    if (!data.Item) {
+    return data.Item ? unmarshall(data.Item) : null;
+}
+
+async function getSugestoes() {
+    const item = await getPrediction();
+    if (!item) {
         return json(404, { message: "Nenhuma predição encontrada." });
     }
     return json(200, {
-        timestamp: data.Item.timestamp?.S,
-        suggestions: data.Item.suggestions?.M,
-        stats: data.Item.stats?.M
+        timestamp: item.timestamp,
+        suggestions: item.suggestions,
+        stats: item.stats,
+    });
+}
+
+async function getResultados() {
+    const item = await getPrediction();
+    if (!item || !item.latest_results) {
+        return json(404, { message: "Nenhum resultado disponível." });
+    }
+    return json(200, {
+        timestamp: item.timestamp,
+        results: item.latest_results,
     });
 }
 
